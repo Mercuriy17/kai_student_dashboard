@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+from datetime import date
+from typing import List, Optional
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QStackedWidget,
+    QStatusBar,
+    QStyle,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config.defaults import APP_VERSION, DEFAULT_SETTINGS
+from core.database import DatabaseManager
+from core.domain.academic_rules import ParityResolver
+from core.file_indexer import LocalFileIndexer
+from core.repositories import AcademicRepository, SyncAndFileRepository
+from core.services import AcademicService
+from ui.pages_academic import (
+    DashboardPage,
+    SchedulePage,
+    SubjectsAndRsoPage,
+    TasksAndFocusPage,
+)
+from ui.pages_cognitive_and_tools import (
+    AlgorithmsAndAiPage,
+    AnalyticsPage,
+    CornellNotesPage,
+    ExamSession21Page,
+    FilesAndSearchPage,
+    RdPortfolioPage,
+    SettingsAndBackupsPage,
+    SyncQueuePage,
+)
+from ui.theme import get_stylesheet
+from ui.widgets import QuickAddDialog
+
+
+class MainWindow(QMainWindow):
+    """Головне вікно КАІ Student Command Center на 12 функціональних розділів."""
+
+    file_indexed_signal = Signal(str)
+
+    NAV_ITEMS = [
+        ("🏠  Головна (День)", 0),
+        ("📅  Розклад і вікна", 1),
+        ("📊  РСО та консультації", 2),
+        ("✅  Завдання і Фокус", 3),
+        ("📝  Лекції (Корнелл)", 4),
+        ("🎯  Сесія «21 день»", 5),
+        ("🚀  КАІ R&D Портфоліо", 6),
+        ("📁  Файли та FTS5", 7),
+        ("🔄  Синхронізація", 8),
+        ("🛡  Алгоритми 1–6 та ШІ", 9),
+        ("📈  Аналітика", 10),
+        ("⚙️  Налаштування і бекапи", 11),
+    ]
+
+    def __init__(self, db: DatabaseManager) -> None:
+        super().__init__()
+        self.db = db
+        self.academic_repo = AcademicRepository(db)
+        self.sync_repo = SyncAndFileRepository(db)
+        self.academic_service = AcademicService(db)
+
+        self.setWindowTitle(f"КАІ Student Command Center v{APP_VERSION}")
+        self.resize(1340, 840)
+
+        # Ініціалізація фонового індексатора файлів watchdog
+        self.file_indexed_signal.connect(self._on_file_indexed_ui)
+        self.indexer = LocalFileIndexer(
+            self.sync_repo,
+            on_indexed_callback=lambda fname: self.file_indexed_signal.emit(fname),
+        )
+        self.indexer.start_watching()
+
+        root = QWidget()
+        root.setObjectName("RootContainer")
+        self.setCentralWidget(root)
+
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # 1. Ліва навігаційна панель
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(245)
+        sb_layout = QVBoxLayout(sidebar)
+        sb_layout.setContentsMargins(14, 18, 14, 14)
+        sb_layout.setSpacing(6)
+
+        brand = QLabel("KAI COMMAND CENTER")
+        brand.setObjectName("BrandTitle")
+        sb_layout.addWidget(brand)
+
+        student_name = self.academic_repo.get_setting("student_name", DEFAULT_SETTINGS.student_name)
+        student_group = self.academic_repo.get_setting("student_group", DEFAULT_SETTINGS.student_group)
+        sub_brand = QLabel(f"{student_name} • {student_group}")
+        sub_brand.setObjectName("BrandSubtitle")
+        sb_layout.addWidget(sub_brand)
+        sb_layout.addSpacing(12)
+
+        self._nav_buttons: List[QPushButton] = []
+        for label, page_idx in self.NAV_ITEMS:
+            btn = QPushButton(label)
+            btn.setProperty("class", "NavButton")
+            btn.setProperty("active", "true" if page_idx == 0 else "false")
+            btn.clicked.connect(lambda _, idx=page_idx: self.switch_page(idx))
+            sb_layout.addWidget(btn)
+            self._nav_buttons.append(btn)
+
+        sb_layout.addStretch()
+
+        quick_btn = QPushButton("+ Швидке завдання (Ctrl+N)")
+        quick_btn.setProperty("class", "PrimaryBtn")
+        quick_btn.clicked.connect(self.open_quick_add)
+        sb_layout.addWidget(quick_btn)
+
+        root_layout.addWidget(sidebar)
+
+        # 2. Права робоча зона (TopBar + QStackedWidget)
+        right_area = QWidget()
+        right_layout = QVBoxLayout(right_area)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        top_bar = QFrame()
+        top_bar.setObjectName("TopBar")
+        top_bar.setFixedHeight(56)
+        tb_layout = QHBoxLayout(top_bar)
+        tb_layout.setContentsMargins(18, 8, 18, 8)
+        tb_layout.setSpacing(12)
+
+        self.parity_badge = QLabel()
+        self.parity_badge.setProperty("class", "Badge")
+        tb_layout.addWidget(self.parity_badge)
+
+        self.pending_badge = QLabel()
+        self.pending_badge.setProperty("class", "BadgeWarning")
+        tb_layout.addWidget(self.pending_badge)
+
+        tb_layout.addStretch()
+
+        self.global_search = QLineEdit()
+        self.global_search.setPlaceholderText("Глобальний пошук FTS5 (Ctrl+K)...")
+        self.global_search.setFixedWidth(300)
+        self.global_search.returnPressed.connect(self._execute_global_search)
+        tb_layout.addWidget(self.global_search)
+
+        right_layout.addWidget(top_bar)
+
+        # Стек 12 сторінок
+        self.stack = QStackedWidget()
+        self.pages = [
+            DashboardPage(db, on_data_changed=self.refresh_all),
+            SchedulePage(db, on_data_changed=self.refresh_all),
+            SubjectsAndRsoPage(db, on_data_changed=self.refresh_all),
+            TasksAndFocusPage(db, on_data_changed=self.refresh_all),
+            CornellNotesPage(db, on_data_changed=self.refresh_all),
+            ExamSession21Page(db, on_data_changed=self.refresh_all),
+            RdPortfolioPage(db, on_data_changed=self.refresh_all),
+            FilesAndSearchPage(db, self.indexer, on_data_changed=self.refresh_all),
+            SyncQueuePage(db, on_data_changed=self.refresh_all),
+            AlgorithmsAndAiPage(db, on_data_changed=self.refresh_all),
+            AnalyticsPage(db),
+            SettingsAndBackupsPage(
+                db,
+                on_theme_changed=self.apply_theme,
+                on_data_changed=self.refresh_all,
+            ),
+        ]
+        for p in self.pages:
+            self.stack.addWidget(p)
+
+        right_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(right_area, 1)
+
+        # Статус-бар та гарячі клавіші
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Локальна база SQLite WAL готова до роботи.")
+
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.open_quick_add)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.global_search.setFocus)
+
+        self._setup_tray()
+        self._update_top_badges()
+
+        saved_theme = self.academic_repo.get_setting("theme", DEFAULT_SETTINGS.theme)
+        self.apply_theme(saved_theme)
+
+    def _setup_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon: Optional[QSystemTrayIcon] = None
+            return
+        self.tray_icon = QSystemTrayIcon(self)
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self.tray_icon.setIcon(icon)
+        self.tray_icon.setToolTip("КАІ Student Command Center")
+
+        tray_menu = QMenu(self)
+        show_act = QAction("Відкрити командний центр", self)
+        show_act.triggered.connect(self.showNormal)
+        quick_act = QAction("+ Швидке завдання", self)
+        quick_act.triggered.connect(self.open_quick_add)
+        quit_act = QAction("Вихід", self)
+        quit_act.triggered.connect(QApplication.quit)
+
+        tray_menu.addAction(show_act)
+        tray_menu.addAction(quick_act)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_act)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+
+    def apply_theme(self, theme_name: str) -> None:
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.setStyleSheet(get_stylesheet(theme_name))
+
+    def switch_page(self, index: int) -> None:
+        if 0 <= index < len(self.pages):
+            self.stack.setCurrentIndex(index)
+            for idx, btn in enumerate(self._nav_buttons):
+                btn.setProperty("active", "true" if idx == index else "false")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+
+    def refresh_all(self) -> None:
+        self._update_top_badges()
+        for page in self.pages:
+            if hasattr(page, "refresh"):
+                page.refresh()
+
+    def _update_top_badges(self) -> None:
+        anchor_str = self.academic_repo.get_setting(
+            "parity_anchor_date", DEFAULT_SETTINGS.parity_anchor_date
+        )
+        parity = ParityResolver.get_week_parity(date.today(), date.fromisoformat(anchor_str))
+        self.parity_badge.setText(ParityResolver.format_parity_ua(parity))
+
+        pending_cnt = len(self.sync_repo.list_agent_changes(status="pending"))
+        self.pending_badge.setText(f"Черга синхронізації: {pending_cnt}")
+        self.pending_badge.setVisible(pending_cnt > 0)
+
+    def open_quick_add(self) -> None:
+        dlg = QuickAddDialog(on_submit=self._handle_quick_add_submit, parent=self)
+        dlg.exec()
+
+    def _handle_quick_add_submit(self, raw_text: str) -> None:
+        self.academic_service.quick_add_task(raw_text)
+        self.refresh_all()
+        self.status_bar.showMessage(f"Додано завдання: {raw_text}", 4000)
+
+    def _execute_global_search(self) -> None:
+        query = self.global_search.text().strip()
+        if not query:
+            return
+        files_page = self.pages[7]
+        if isinstance(files_page, FilesAndSearchPage):
+            files_page.search_edit.setText(query)
+            files_page._run_search()
+            self.switch_page(7)
+
+    def _on_file_indexed_ui(self, filename: str) -> None:
+        self.status_bar.showMessage(f"Проіндексовано файл: {filename}", 4000)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.indexer.stop_watching()
+        self.db.close()
+        super().closeEvent(event)
