@@ -14,6 +14,8 @@ from core.repositories import (
     SyncAndFileRepository,
     TaskRepository,
 )
+from core.logging_setup import setup_logging
+from core.logging_setup import setup_logging
 from ui.main_window import MainWindow
 
 
@@ -253,6 +255,8 @@ def seed_initial_kai_data(db: DatabaseManager) -> None:
 
 
 def main() -> int:
+    setup_logging()
+    setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("KAI Student Command Center")
 

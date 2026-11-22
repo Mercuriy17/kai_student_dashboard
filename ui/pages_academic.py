@@ -35,7 +35,9 @@ from core.repositories import AcademicRepository, CognitiveRepository, TaskRepos
 from core.services import AcademicService, BlackoutExportService
 from integrations.kai_portal import KaiPortalAdapter
 from core.repositories import SyncAndFileRepository
-from ui.widgets import FocusTimerBar, KanbanCardWidget, RsoProgressCard
+from ui.kanban_card import KanbanCardWidget
+from ui.layout_utils import clear_layout
+from ui.widgets import FocusTimerBar, RsoProgressCard
 
 
 def _wrap_in_scroll(content_widget: QWidget) -> QScrollArea:
@@ -74,10 +76,7 @@ class DashboardPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        while self.main_layout.count():
-            item = self.main_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        clear_layout(self.main_layout)
 
         ctx = self.service.get_today_context()
         today_str = ctx["date"]
@@ -415,10 +414,7 @@ class SchedulePage(QWidget):
             )
 
         # Оновлення блоку аналізу вікон по днях
-        while self.win_layout.count():
-            w_item = self.win_layout.takeAt(0)
-            if w_item.widget():
-                w_item.widget().deleteLater()
+        clear_layout(self.win_layout)
 
         hdr = QLabel("🧭 Аналіз вільних «вікон» між парами з урахуванням переходів корпусами КАІ:")
         hdr.setProperty("class", "CardTitle")
@@ -752,6 +748,8 @@ class TasksAndFocusPage(QWidget):
 
             col_tasks = [t for t in tasks if t.get("status") == status_key]
             hdr = QLabel(f"{col_title} ({len(col_tasks)})")
+            hdr.setProperty("tone", status_key)
+            hdr.setProperty("tone", status_key)
             hdr.setProperty("class", "CardTitle")
             col_layout.addWidget(hdr)
 

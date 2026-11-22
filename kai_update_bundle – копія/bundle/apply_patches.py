@@ -244,13 +244,24 @@ PATCHES: dict[str, list[tuple[str, str]]] = {
 APPEND_IF_MISSING = {"requirements.txt": ["beautifulsoup4>=4.12.0"]}
 
 
+def find_root() -> Path:
+    """Іде вгору від теки скрипта й поточної теки, поки не знайде main.py + теку core/."""
+    for start in (HERE, Path.cwd().resolve()):
+        for cand in (start, *start.parents):
+            if (cand / "main.py").exists() and (cand / "core").is_dir():
+                return cand
+    print("Не знайдено корінь проєкту (потрібні main.py і тека core/). Вкажіть --root <шлях>.")
+    sys.exit(2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".", help="корінь репозиторію")
+    ap.add_argument("--root", default=None, help="корінь репозиторію (за замовчуванням шукається автоматично)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only", nargs="*", help="обмежити патчі файлами, що містять ці підрядки (для тестів)")
     args = ap.parse_args()
-    root = Path(args.root).resolve()
+    root = Path(args.root).resolve() if args.root else find_root()
+    print(f"Корінь проєкту: {root}")
 
     new_contents: dict[Path, str] = {}
     errors: list[str] = []

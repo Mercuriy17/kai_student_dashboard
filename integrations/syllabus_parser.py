@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from core.file_indexer import extract_text_from_file
+from infrastructure.files.file_indexer import extract_text_from_file
 
 
 class SyllabusParser:

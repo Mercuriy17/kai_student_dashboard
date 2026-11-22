@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -32,7 +33,7 @@ from PySide6.QtWidgets import (
 from config.defaults import DEFAULT_SETTINGS
 from core.database import DatabaseManager
 from core.domain.cognitive_and_priority import ReviewScheduler
-from core.file_indexer import LocalFileIndexer
+from infrastructure.files.file_indexer import LocalFileIndexer
 from core.repositories import (
     AcademicRepository,
     CognitiveRepository,
@@ -41,7 +42,17 @@ from core.repositories import (
     TaskRepository,
 )
 from core.services import AcademicService, BlackoutExportService, SyncApprovalService
+from core.connector_state import ConnectorStateRepository
+from core.credential_vault import CredentialVault
+from integrations.digital_university import DigitalUniversityConnector
+from core.connector_state import ConnectorStateRepository
+from core.credential_vault import CredentialVault
+from integrations.digital_university import DigitalUniversityConnector
 from integrations.google_classroom import GoogleClassroomConnector
+from ui.connections_dialog import ConnectionsDialog
+from ui.workers import TaskWorker
+from ui.connections_dialog import ConnectionsDialog
+from ui.workers import TaskWorker
 from integrations.kai_portal import KaiPortalAdapter
 from integrations.syllabus_parser import SyllabusParser
 
@@ -598,7 +609,13 @@ class FilesAndSearchPage(QWidget):
         if not file_str:
             return
         p = Path(file_str)
-        target_subj = subjects[0]
+        names = [s["name"] for s in subjects]
+        chosen, ok = QInputDialog.getItem(
+            self, "Дисципліна", "Для якої дисципліни цей силабус?", names, 0, False
+        )
+        if not ok:
+            return
+        target_subj = subjects[names.index(chosen)]
         draft = SyllabusParser.parse_syllabus_file(p, int(target_subj["id"]))
         self.sync_repo.enqueue_agent_change(
             source="syllabus_parser",
@@ -633,6 +650,14 @@ class SyncQueuePage(QWidget):
         self.approval_service = SyncApprovalService(db)
         self.classroom = GoogleClassroomConnector(self.academic_repo, self.sync_repo)
         self.portal = KaiPortalAdapter(self.academic_repo, self.sync_repo)
+        self.vault = CredentialVault()
+        self.conn_state = ConnectorStateRepository(db)
+        self.du = DigitalUniversityConnector(self.academic_repo, self.sync_repo, self.vault, self.conn_state)
+        self._workers: List[TaskWorker] = []
+        self.vault = CredentialVault()
+        self.conn_state = ConnectorStateRepository(db)
+        self.du = DigitalUniversityConnector(self.academic_repo, self.sync_repo, self.vault, self.conn_state)
+        self._workers: List[TaskWorker] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -652,6 +677,36 @@ class SyncQueuePage(QWidget):
         kai_btn.setProperty("class", "SecondaryBtn")
         kai_btn.clicked.connect(self._sync_kai)
         top.addWidget(kai_btn)
+
+        du_btn = QPushButton("🎓 Digital University")
+        du_btn.setProperty("class", "PrimaryBtn")
+        du_btn.clicked.connect(self._sync_du)
+        top.addWidget(du_btn)
+
+        du_html_btn = QPushButton("📄 Імпорт розкладу (HTML)")
+        du_html_btn.setProperty("class", "SecondaryBtn")
+        du_html_btn.clicked.connect(self._import_du_html)
+        top.addWidget(du_html_btn)
+
+        conn_btn = QPushButton("🔑 Підключення")
+        conn_btn.setProperty("class", "SecondaryBtn")
+        conn_btn.clicked.connect(self._open_connections)
+        top.addWidget(conn_btn)
+
+        du_btn = QPushButton("🎓 Digital University")
+        du_btn.setProperty("class", "PrimaryBtn")
+        du_btn.clicked.connect(self._sync_du)
+        top.addWidget(du_btn)
+
+        du_html_btn = QPushButton("📄 Імпорт розкладу (HTML)")
+        du_html_btn.setProperty("class", "SecondaryBtn")
+        du_html_btn.clicked.connect(self._import_du_html)
+        top.addWidget(du_html_btn)
+
+        conn_btn = QPushButton("🔑 Підключення")
+        conn_btn.setProperty("class", "SecondaryBtn")
+        conn_btn.clicked.connect(self._open_connections)
+        top.addWidget(conn_btn)
         layout.addLayout(top)
 
         hint = QLabel(
@@ -691,10 +746,38 @@ class SyncQueuePage(QWidget):
             al.addWidget(rej_b)
             self.table.setCellWidget(r, 4, act_w)
 
+    def _run_async(self, fn, on_ok) -> None:
+        """Довга операція виконується у фоновому потоці — вікно не зависає."""
+        worker = TaskWorker(fn, self)
+        worker.succeeded.connect(on_ok)
+        worker.failed.connect(lambda msg: QMessageBox.warning(self, "Синхронізація", msg))
+        worker.finished.connect(lambda w=worker: self._workers.remove(w) if w in self._workers else None)
+        self._workers.append(worker)
+        worker.start()
+
     def _sync_classroom(self) -> None:
-        res = self.classroom.sync_to_approval_queue()
+        self._run_async(self.classroom.sync_to_approval_queue, self._after_classroom)
+
+    def _after_classroom(self, res) -> None:
         QMessageBox.information(self, "Google Classroom", res["message"])
         self.on_data_changed()
+
+    def _sync_du(self) -> None:
+        self._run_async(self.du.sync_to_approval_queue, self._after_du)
+
+    def _import_du_html(self) -> None:
+        file_str, _ = QFileDialog.getOpenFileName(
+            self, "Збережена сторінка «Розклад»", "", "HTML (*.html *.htm)"
+        )
+        if file_str:
+            self._run_async(lambda: self.du.import_from_html_file(Path(file_str)), self._after_du)
+
+    def _after_du(self, res) -> None:
+        QMessageBox.information(self, "Digital University", res["message"])
+        self.on_data_changed()
+
+    def _open_connections(self) -> None:
+        ConnectionsDialog(self.vault, self.conn_state, self.du, self).exec()
 
     def _sync_kai(self) -> None:
         added = self.portal.fetch_demo_portal_updates()
@@ -704,7 +787,15 @@ class SyncQueuePage(QWidget):
         self.on_data_changed()
 
     def _approve(self, change_id: int) -> None:
-        msg = self.approval_service.approve_change(change_id)
+        try:
+            try:
+            msg = self.approval_service.approve_change(change_id)
+        except (ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Не застосовано", f"Зміну не вдалося застосувати: {exc}")
+            return
+        except (ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Не застосовано", f"Зміну не вдалося застосувати: {exc}")
+            return
         QMessageBox.information(self, "Застосовано", msg)
         self.on_data_changed()
 

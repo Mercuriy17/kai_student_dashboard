@@ -268,7 +268,9 @@ class TaskRepository:
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         return self.db.fetch_all(
             f"""
-            SELECT t.*, s.name AS subject_name, s.code AS subject_code, s.color_hex
+            SELECT t.*, s.name AS subject_name, s.code AS subject_code, s.color_hex,
+                (SELECT COUNT(*) FROM task_steps ts WHERE ts.task_id = t.id) AS steps_total,
+                (SELECT COUNT(*) FROM task_steps ts WHERE ts.task_id = t.id AND ts.is_done = 1) AS steps_done
             FROM tasks t
             LEFT JOIN subjects s ON s.id = t.subject_id
             {where_sql}

@@ -213,9 +213,47 @@ class SyncApprovalService:
                 )
             msg = f"Структуру РСО ({len(payload.get('components', []))} компонентів) застосовано."
 
+        elif entity_type == "calendar_event":
+            self.academic_repo.add_calendar_event(
+                title=str(payload["title"]),
+                event_date=str(payload["event_date"]),
+                start_time=str(payload["start_time"]),
+                end_time=str(payload["end_time"]),
+                event_type=str(payload.get("event_type", "replacement")),
+                subject_id=self._resolve_subject_id(payload),
+                location=str(payload.get("location", "")),
+                description=str(payload.get("description", "")),
+            )
+            msg = f"Разову подію «{row['title']}» додано до календаря."
+
+        elif entity_type == "setting":
+            if payload.get("key") not in self.ALLOWED_SETTING_KEYS:
+                return "Цей параметр не можна змінити зовнішньою пропозицією."
+            self.academic_repo.set_setting(str(payload["key"]), str(payload["value"]))
+            msg = f"Параметр «{payload['key']}» оновлено."
+
+        elif entity_type == "calendar_event":
+            self.academic_repo.add_calendar_event(
+                title=str(payload["title"]),
+                event_date=str(payload["event_date"]),
+                start_time=str(payload["start_time"]),
+                end_time=str(payload["end_time"]),
+                event_type=str(payload.get("event_type", "replacement")),
+                subject_id=self._resolve_subject_id(payload),
+                location=str(payload.get("location", "")),
+                description=str(payload.get("description", "")),
+            )
+            msg = f"Разову подію «{row['title']}» додано до календаря."
+
+        elif entity_type == "setting":
+            if payload.get("key") not in self.ALLOWED_SETTING_KEYS:
+                return "Цей параметр не можна змінити зовнішньою пропозицією."
+            self.academic_repo.set_setting(str(payload["key"]), str(payload["value"]))
+            msg = f"Параметр «{payload['key']}» оновлено."
+
         elif entity_type == "schedule":
             self.academic_repo.add_schedule_entry(
-                subject_id=int(payload["subject_id"]),
+                subject_id=self._resolve_subject_id(payload),
                 day_of_week=int(payload["day_of_week"]),
                 pair_number=int(payload.get("pair_number", 1)),
                 start_time=str(payload["start_time"]),
@@ -224,6 +262,10 @@ class SyncApprovalService:
                 lesson_type=str(payload.get("lesson_type", "lecture")),
                 building=str(payload.get("building", "1")),
                 room=str(payload.get("room", "")),
+                online_url=str(payload.get("online_url", "")),
+                notes=str(payload.get("notes", "")),
+                online_url=str(payload.get("online_url", "")),
+                notes=str(payload.get("notes", "")),
             )
             msg = f"Заняття «{row['title']}» додано до розкладу."
         else:
@@ -231,6 +273,52 @@ class SyncApprovalService:
 
         self.sync_repo.mark_agent_change(change_id, "approved")
         return msg
+
+    ALLOWED_SETTING_KEYS = frozenset({"parity_anchor_date"})
+
+    def _resolve_subject_id(self, payload: Dict[str, Any]) -> int:
+        """Дисципліна за ID або назвою з порталу; якщо такої немає — створюється в активному семестрі."""
+        if payload.get("subject_id") is not None:
+            return int(payload["subject_id"])
+        name = str(payload.get("subject_name", "")).strip()
+        if not name:
+            raise ValueError("У пропозиції не вказано дисципліну.")
+        low = name.lower()
+        subjects = self.academic_repo.list_subjects()
+        for subj in subjects:
+            if str(subj["name"]).lower() == low:
+                return int(subj["id"])
+        for subj in subjects:
+            existing = str(subj["name"]).lower()
+            if len(existing) >= 5 and (low in existing or existing in low):
+                return int(subj["id"])
+        sem = self.academic_repo.get_active_semester()
+        if sem is None:
+            raise ValueError("Немає активного семестру для створення дисципліни.")
+        return self.academic_repo.create_subject(semester_id=int(sem["id"]), name=name)
+
+    ALLOWED_SETTING_KEYS = frozenset({"parity_anchor_date"})
+
+    def _resolve_subject_id(self, payload: Dict[str, Any]) -> int:
+        """Дисципліна за ID або назвою з порталу; якщо такої немає — створюється в активному семестрі."""
+        if payload.get("subject_id") is not None:
+            return int(payload["subject_id"])
+        name = str(payload.get("subject_name", "")).strip()
+        if not name:
+            raise ValueError("У пропозиції не вказано дисципліну.")
+        low = name.lower()
+        subjects = self.academic_repo.list_subjects()
+        for subj in subjects:
+            if str(subj["name"]).lower() == low:
+                return int(subj["id"])
+        for subj in subjects:
+            existing = str(subj["name"]).lower()
+            if len(existing) >= 5 and (low in existing or existing in low):
+                return int(subj["id"])
+        sem = self.academic_repo.get_active_semester()
+        if sem is None:
+            raise ValueError("Немає активного семестру для створення дисципліни.")
+        return self.academic_repo.create_subject(semester_id=int(sem["id"]), name=name)
 
     def reject_change(self, change_id: int) -> None:
         self.sync_repo.mark_agent_change(change_id, "rejected")

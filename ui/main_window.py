@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPushButton,
     QStackedWidget,
     QStatusBar,
@@ -26,7 +25,7 @@ from PySide6.QtWidgets import (
 from config.defaults import APP_VERSION, DEFAULT_SETTINGS
 from core.database import DatabaseManager
 from core.domain.academic_rules import ParityResolver
-from core.file_indexer import LocalFileIndexer
+from infrastructure.files.file_indexer import LocalFileIndexer
 from core.repositories import AcademicRepository, SyncAndFileRepository
 from core.services import AcademicService
 from ui.pages_academic import (
@@ -53,6 +52,12 @@ class MainWindow(QMainWindow):
     """Головне вікно КАІ Student Command Center на 12 функціональних розділів."""
 
     file_indexed_signal = Signal(str)
+
+    # Заголовки груп у бічній панелі (ключ — індекс першої сторінки групи)
+    NAV_SECTIONS = {0: "НАВЧАННЯ", 4: "ЗНАННЯ", 6: "КАР'ЄРА ТА ДАНІ", 9: "СИСТЕМА"}
+
+    # Заголовки груп у бічній панелі (ключ — індекс першої сторінки групи)
+    NAV_SECTIONS = {0: "НАВЧАННЯ", 4: "ЗНАННЯ", 6: "КАР'ЄРА ТА ДАНІ", 9: "СИСТЕМА"}
 
     NAV_ITEMS = [
         ("🏠  Головна (День)", 0),
@@ -116,6 +121,16 @@ class MainWindow(QMainWindow):
 
         self._nav_buttons: List[QPushButton] = []
         for label, page_idx in self.NAV_ITEMS:
+            section = self.NAV_SECTIONS.get(page_idx)
+            if section:
+                sec_lbl = QLabel(section)
+                sec_lbl.setProperty("class", "NavSection")
+                sb_layout.addWidget(sec_lbl)
+            section = self.NAV_SECTIONS.get(page_idx)
+            if section:
+                sec_lbl = QLabel(section)
+                sec_lbl.setProperty("class", "NavSection")
+                sb_layout.addWidget(sec_lbl)
             btn = QPushButton(label)
             btn.setProperty("class", "NavButton")
             btn.setProperty("active", "true" if page_idx == 0 else "false")
