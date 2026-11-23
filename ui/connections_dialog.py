@@ -127,7 +127,11 @@ class ConnectionsDialog(QDialog):
         self.status.setText(msg)
 
     def _forget(self) -> None:
-        self.vault.delete(CONNECTOR_ID)
+        try:
+            self.vault.delete(CONNECTOR_ID)
+        except VaultError as exc:
+            QMessageBox.warning(self, "Не вдалося видалити", str(exc))
+            return
         self.login_edit.clear()
         self.password_edit.clear()
         self.password_edit.setPlaceholderText("")
