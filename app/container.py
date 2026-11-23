@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+from pathlib import Path
 from app.events import EventBus
 from config.defaults import DB_PATH
 from core.database.connection import DatabaseManager
-from infrastructure.system.credentials import CredentialVault
+from core.credential_vault import CredentialVault
 
 
 @dataclass(slots=True)
@@ -14,7 +15,7 @@ class AppContainer:
     @classmethod
     def build(cls) -> "AppContainer":
         return cls(
-            db=DatabaseManager(DB_PATH),
+            db=DatabaseManager(Path(DB_PATH)),
             events=EventBus(),
             vault=CredentialVault(),
         )
