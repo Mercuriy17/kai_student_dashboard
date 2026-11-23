@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
 
         self.academic_repo = AcademicRepository(self.db)
         self.sync_repo = SyncAndFileRepository(self.db)
-        self.academic_service = AcademicService(self.db)
+        self.academic_service = self.container.services.academic
 
         self.setWindowTitle(f"КАІ Student Command Center v{APP_VERSION}")
         self.resize(1340, 840)
@@ -191,7 +191,12 @@ class MainWindow(QMainWindow):
             ExamSession21Page(self.db, on_data_changed=self.refresh_all),
             RdPortfolioPage(self.db, on_data_changed=self.refresh_all),
             FilesAndSearchPage(self.db, self.indexer, on_data_changed=self.refresh_all),
-            SyncQueuePage(self.db, on_data_changed=self.refresh_all),
+            SyncQueuePage(
+                self.db,
+                on_data_changed=self.refresh_all,
+                approval_service=self.container.services.sync_approval,
+                vault=self.container.vault,
+            ),
             AlgorithmsAndAiPage(self.db, on_data_changed=self.refresh_all),
             AnalyticsPage(self.db),
             SettingsAndBackupsPage(
