@@ -687,20 +687,23 @@ class SyncQueuePage(QWidget):
         db: DatabaseManager,
         on_data_changed: Callable[[], None],
         parent: Optional[QWidget] = None,
+        *,
+        approval_service: Optional[SyncApprovalService] = None,
+        vault: Optional[CredentialVault] = None,
     ) -> None:
         super().__init__(parent)
         self.db = db
         self.on_data_changed = on_data_changed
         self.sync_repo = SyncAndFileRepository(db)
         self.academic_repo = AcademicRepository(db)
-        self.approval_service = SyncApprovalService(db)
+        self.approval_service = approval_service or SyncApprovalService(db)
         self.classroom = (
             GoogleClassroomConnector(self.academic_repo, self.sync_repo)
             if GoogleClassroomConnector is not None
             else None
         )
         self.portal = KaiPortalAdapter(self.academic_repo, self.sync_repo)
-        self.vault = CredentialVault()
+        self.vault = vault or CredentialVault()
         self.conn_state = ConnectorStateRepository(db)
         self.du = DigitalUniversityConnector(self.academic_repo, self.sync_repo, self.vault, self.conn_state)
         self._workers: List[TaskWorker] = []
