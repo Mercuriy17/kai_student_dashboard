@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from config.defaults import BACKUPS_DIR, DB_PATH, DEFAULT_SETTINGS
 from core.connector_state import ConnectorStateRepository
 from core.database.connection import DatabaseManager
+from core.exceptions import DashboardError
 from core.domain.cognitive_and_priority import ReviewScheduler
 from core.repositories import (
     AcademicRepository,
@@ -829,7 +830,7 @@ class SyncQueuePage(QWidget):
     def _approve(self, change_id: int) -> None:
         try:
             msg = self.approval_service.approve_change(change_id)
-        except (ValueError, KeyError) as exc:
+        except (DashboardError, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Не застосовано", f"Зміну не вдалося застосувати: {exc}")
             return
         QMessageBox.information(self, "Застосовано", msg)
