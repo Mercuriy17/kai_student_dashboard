@@ -18,19 +18,27 @@ class BaseRepository:
     def _fetch_all(self, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
         with self._db.transaction() as conn:
             rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            return [dict(row) for row in rows]
 
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         with self._db.transaction() as conn:
-            cur = conn.execute(sql, params)
-            return int(cur.lastrowid or cur.rowcount)
+            cursor = conn.execute(sql, params)
+            return int(cursor.lastrowid or cursor.rowcount)
 
-    def _upsert_fts(self, conn: sqlite3.Connection, entity_type: str, entity_id: int, title: str, content: str) -> None:
-        if hasattr(self._db, "upsert_fts_document"):
-            self._db.upsert_fts_document(entity_type, entity_id, title, content)
-            return
-        conn.execute("DELETE FROM global_fts WHERE entity_type = ? AND entity_id = ?", (entity_type, entity_id))
+    @staticmethod
+    def _upsert_fts(
+        conn: sqlite3.Connection,
+        entity_type: str,
+        entity_id: int,
+        title: str,
+        content: str,
+    ) -> None:
+        """Оновлює запис у FTS5 в межах транзакції виклику репозиторію."""
         conn.execute(
-            "INSERT INTO global_fts (entity_type, entity_id, title, content) VALUES (?, ?, ?, ?)",
+            "DELETE FROM fts_documents WHERE doc_type = ? AND ref_id = ?",
+            (entity_type, entity_id),
+        )
+        conn.execute(
+            "INSERT INTO fts_documents(doc_type, ref_id, title, body) VALUES (?, ?, ?, ?)",
             (entity_type, entity_id, title, content),
         )
