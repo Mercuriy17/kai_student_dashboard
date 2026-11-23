@@ -34,7 +34,7 @@ The current 20 application tables are not a one-to-one implementation of those e
 ## 3. Layering and coupling
 
 - Presentation: 12 page classes are wired in `ui/main_window.py`; 4 academic pages share `ui/pages_academic.py`, 8 other pages share `ui/pages_cognitive_and_tools.py`.
-- Application: `core/services.py` contains AcademicService, SyncApprovalService and BlackoutExportService; `app/container.py` is a minimal composition root. `app/application.py` and `app/bootstrap.py` are empty placeholders.
+- Application: `app/application.py` now composes AcademicService, SyncApprovalService and BlackoutExportService; `app/container.py` owns the shared service graph. MainWindow and SyncQueuePage receive the academic and sync-approval services through dependency injection. Remaining pages still construct some repositories/services directly; migration is incremental.
 - Domain: `core/domain/academic_rules.py` and `core/domain/cognitive_and_priority.py` contain current rules; the new `core/domain/models`, `rules` and `services` packages are mostly empty placeholders.
 - Persistence: legacy `core/database.py` and new `core/database/connection.py` coexist. Repository facade `core/repositories/__init__.py` composes multiple repositories using inheritance.
 - Integrations: Google Classroom adapter is currently an abstraction/staging adapter; Digital University has a substantial parser/import implementation; KAI portal currently supports ICS import/export and has a demo-update method that must never be treated as a live source.
@@ -52,6 +52,7 @@ The current 20 application tables are not a one-to-one implementation of those e
 
 ## 5. Verification boundaries
 
-- CI currently runs Python compilation and pytest under GitHub Actions.
+- CI currently runs Python compilation and pytest under GitHub Actions. Latest checked run: 35 passed (commit `ab36f8b`).
+- First dependency-injection slice is implemented and covered by `tests/test_application_composition.py`.
 - Passing unit/integration tests do not prove Qt UI usability on Windows, successful Google OAuth, or live KAI portal access.
 - No schema-destructive migration should be merged without a tested backup and restore path.
