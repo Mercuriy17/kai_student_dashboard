@@ -4,7 +4,7 @@ import logging
 import re
 from logging.handlers import RotatingFileHandler
 
-from config.defaults import DATA_DIR
+from config.defaults import LOGS_DIR
 
 _SECRET_RE = re.compile(r"(password|passwd|pwd|token|csrf|secret)(\s*[=:]\s*)(\S+)", re.IGNORECASE)
 
@@ -19,9 +19,8 @@ class RedactFilter(logging.Filter):
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    log_dir = DATA_DIR / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(log_dir / "app.log", maxBytes=1_000_000, backupCount=5, encoding="utf-8")
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(LOGS_DIR / "app.log", maxBytes=1_000_000, backupCount=5, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     handler.addFilter(RedactFilter())
     root = logging.getLogger()
