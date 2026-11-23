@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from core.database.connection import DatabaseManager
+from core.exceptions import DatabaseTransactionError
 from core.repositories import SyncAndFileRepository
 from core.services import SyncApprovalService
 
@@ -72,7 +73,7 @@ def test_failed_approval_does_not_mark_change_approved(db):
     change = repo.list_agent_changes()[0]
     service = SyncApprovalService(db)
 
-    with pytest.raises(Exception):
+    with pytest.raises(DatabaseTransactionError):
         service.approve_change(int(change["id"]))
 
     saved = db.fetch_one(
