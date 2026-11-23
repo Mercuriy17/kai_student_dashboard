@@ -54,15 +54,22 @@ class CredentialVault:
             return None
         try:
             data = json.loads(raw)
+            if not isinstance(data, dict) or "login" not in data or "password" not in data:
+                return None
             return StoredCredentials(login=str(data["login"]), password=str(data["password"]))
-        except (ValueError, KeyError):
+        except (TypeError, ValueError, KeyError):
             return None
 
     def has(self, connector_id: str) -> bool:
         return self.load(connector_id) is not None
 
     def delete(self, connector_id: str) -> None:
+        service = self._service(connector_id)
         try:
-            self._kr.delete_password(self._service(connector_id), _ENTRY)
-        except Exception:  # noqa: BLE001 — немає запису: нічого видаляти
-            pass
+            # Відсутній запис — штатний стан; помилку backend під час читання
+            # або фактичного видалення не можна приховувати від користувача.
+            if self._kr.get_password(service, _ENTRY) is None:
+                return
+            self._kr.delete_password(service, _ENTRY)
+        except Exception as exc:  # noqa: BLE001
+            raise VaultError("Не вдалося видалити облікові дані з Диспетчера облікових даних Windows.") from exc
