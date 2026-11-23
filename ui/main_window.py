@@ -22,12 +22,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.container import AppContainer
 from config.defaults import APP_VERSION, DEFAULT_SETTINGS
-from core.database import DatabaseManager
+from core.database.connection import DatabaseManager
 from core.domain.academic_rules import ParityResolver
-from infrastructure.files.file_indexer import LocalFileIndexer
 from core.repositories import AcademicRepository, SyncAndFileRepository
 from core.services import AcademicService
+from infrastructure.files.file_indexer import LocalFileIndexer
 from ui.pages_academic import (
     DashboardPage,
     SchedulePage,
@@ -49,14 +50,10 @@ from ui.widgets import QuickAddDialog
 
 
 class MainWindow(QMainWindow):
-    """Головне вікно КАІ Student Command Center на 12 функціональних розділів."""
+    """Головне вікно KAI Student Command Center на 12 функціональних розділів."""
 
     file_indexed_signal = Signal(str)
 
-    # Заголовки груп у бічній панелі (ключ — індекс першої сторінки групи)
-    NAV_SECTIONS = {0: "НАВЧАННЯ", 4: "ЗНАННЯ", 6: "КАР'ЄРА ТА ДАНІ", 9: "СИСТЕМА"}
-
-    # Заголовки груп у бічній панелі (ключ — індекс першої сторінки групи)
     NAV_SECTIONS = {0: "НАВЧАННЯ", 4: "ЗНАННЯ", 6: "КАР'ЄРА ТА ДАНІ", 9: "СИСТЕМА"}
 
     NAV_ITEMS = [
@@ -74,12 +71,18 @@ class MainWindow(QMainWindow):
         ("⚙️  Налаштування і бекапи", 11),
     ]
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(
+        self,
+        container: AppContainer | None = None,
+        db: DatabaseManager | None = None,
+    ) -> None:
         super().__init__()
-        self.db = db
-        self.academic_repo = AcademicRepository(db)
-        self.sync_repo = SyncAndFileRepository(db)
-        self.academic_service = AcademicService(db)
+        self.container = container or AppContainer.build()
+        self.db = db or self.container.db
+
+        self.academic_repo = AcademicRepository(self.db)
+        self.sync_repo = SyncAndFileRepository(self.db)
+        self.academic_service = AcademicService(self.db)
 
         self.setWindowTitle(f"КАІ Student Command Center v{APP_VERSION}")
         self.resize(1340, 840)
@@ -112,9 +115,12 @@ class MainWindow(QMainWindow):
         brand.setObjectName("BrandTitle")
         sb_layout.addWidget(brand)
 
-        student_name = self.academic_repo.get_setting("student_name", DEFAULT_SETTINGS.student_name)
-        student_group = self.academic_repo.get_setting("student_group", DEFAULT_SETTINGS.student_group)
-        sub_brand = QLabel(f"{student_name} • {student_group}")
+        default_name = getattr(DEFAULT_SETTINGS, "student_name", "Студент КАІ")
+        default_group = getattr(DEFAULT_SETTINGS, "student_group", "")
+        student_name = self.academic_repo.get_setting("student_name", default_name)
+        student_group = self.academic_repo.get_setting("student_group", default_group)
+
+        sub_brand = QLabel(f"{student_name} • {student_group}" if student_group else student_name)
         sub_brand.setObjectName("BrandSubtitle")
         sb_layout.addWidget(sub_brand)
         sb_layout.addSpacing(12)
@@ -126,11 +132,7 @@ class MainWindow(QMainWindow):
                 sec_lbl = QLabel(section)
                 sec_lbl.setProperty("class", "NavSection")
                 sb_layout.addWidget(sec_lbl)
-            section = self.NAV_SECTIONS.get(page_idx)
-            if section:
-                sec_lbl = QLabel(section)
-                sec_lbl.setProperty("class", "NavSection")
-                sb_layout.addWidget(sec_lbl)
+
             btn = QPushButton(label)
             btn.setProperty("class", "NavButton")
             btn.setProperty("active", "true" if page_idx == 0 else "false")
@@ -181,19 +183,19 @@ class MainWindow(QMainWindow):
         # Стек 12 сторінок
         self.stack = QStackedWidget()
         self.pages = [
-            DashboardPage(db, on_data_changed=self.refresh_all),
-            SchedulePage(db, on_data_changed=self.refresh_all),
-            SubjectsAndRsoPage(db, on_data_changed=self.refresh_all),
-            TasksAndFocusPage(db, on_data_changed=self.refresh_all),
-            CornellNotesPage(db, on_data_changed=self.refresh_all),
-            ExamSession21Page(db, on_data_changed=self.refresh_all),
-            RdPortfolioPage(db, on_data_changed=self.refresh_all),
-            FilesAndSearchPage(db, self.indexer, on_data_changed=self.refresh_all),
-            SyncQueuePage(db, on_data_changed=self.refresh_all),
-            AlgorithmsAndAiPage(db, on_data_changed=self.refresh_all),
-            AnalyticsPage(db),
+            DashboardPage(self.db, on_data_changed=self.refresh_all),
+            SchedulePage(self.db, on_data_changed=self.refresh_all),
+            SubjectsAndRsoPage(self.db, on_data_changed=self.refresh_all),
+            TasksAndFocusPage(self.db, on_data_changed=self.refresh_all),
+            CornellNotesPage(self.db, on_data_changed=self.refresh_all),
+            ExamSession21Page(self.db, on_data_changed=self.refresh_all),
+            RdPortfolioPage(self.db, on_data_changed=self.refresh_all),
+            FilesAndSearchPage(self.db, self.indexer, on_data_changed=self.refresh_all),
+            SyncQueuePage(self.db, on_data_changed=self.refresh_all),
+            AlgorithmsAndAiPage(self.db, on_data_changed=self.refresh_all),
+            AnalyticsPage(self.db),
             SettingsAndBackupsPage(
-                db,
+                self.db,
                 on_theme_changed=self.apply_theme,
                 on_data_changed=self.refresh_all,
             ),
@@ -215,7 +217,8 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._update_top_badges()
 
-        saved_theme = self.academic_repo.get_setting("theme", DEFAULT_SETTINGS.theme)
+        default_theme = getattr(DEFAULT_SETTINGS, "theme", "dark")
+        saved_theme = self.academic_repo.get_setting("theme", default_theme)
         self.apply_theme(saved_theme)
 
     def _setup_tray(self) -> None:
@@ -262,9 +265,8 @@ class MainWindow(QMainWindow):
                 page.refresh()
 
     def _update_top_badges(self) -> None:
-        anchor_str = self.academic_repo.get_setting(
-            "parity_anchor_date", DEFAULT_SETTINGS.parity_anchor_date
-        )
+        default_anchor = getattr(DEFAULT_SETTINGS, "parity_anchor_date", date.today().isoformat())
+        anchor_str = self.academic_repo.get_setting("parity_anchor_date", default_anchor)
         parity = ParityResolver.get_week_parity(date.today(), date.fromisoformat(anchor_str))
         self.parity_badge.setText(ParityResolver.format_parity_ua(parity))
 
@@ -296,5 +298,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.indexer.stop_watching()
-        self.db.close()
+        if hasattr(self.db, "close"):
+            self.db.close()
         super().closeEvent(event)

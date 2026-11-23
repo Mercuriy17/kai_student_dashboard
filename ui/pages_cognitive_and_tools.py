@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import shutil
+import sqlite3
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -13,7 +15,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -30,10 +31,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.defaults import DEFAULT_SETTINGS
-from core.database import DatabaseManager
+from config.defaults import BACKUPS_DIR, DB_PATH, DEFAULT_SETTINGS
+from core.connector_state import ConnectorStateRepository
+from core.database.connection import DatabaseManager
 from core.domain.cognitive_and_priority import ReviewScheduler
-from infrastructure.files.file_indexer import LocalFileIndexer
 from core.repositories import (
     AcademicRepository,
     CognitiveRepository,
@@ -42,19 +43,26 @@ from core.repositories import (
     TaskRepository,
 )
 from core.services import AcademicService, BlackoutExportService, SyncApprovalService
-from core.connector_state import ConnectorStateRepository
-from core.credential_vault import CredentialVault
+from infrastructure.files.file_indexer import LocalFileIndexer
+from infrastructure.system.credentials import CredentialVault
 from integrations.digital_university import DigitalUniversityConnector
-from core.connector_state import ConnectorStateRepository
-from core.credential_vault import CredentialVault
-from integrations.digital_university import DigitalUniversityConnector
-from integrations.google_classroom import GoogleClassroomConnector
-from ui.connections_dialog import ConnectionsDialog
-from ui.workers import TaskWorker
-from ui.connections_dialog import ConnectionsDialog
-from ui.workers import TaskWorker
 from integrations.kai_portal import KaiPortalAdapter
 from integrations.syllabus_parser import SyllabusParser
+from ui.connections_dialog import ConnectionsDialog
+from ui.workers import TaskWorker
+
+try:
+    from integrations.google_classroom import GoogleClassroomConnector
+except ImportError:
+    GoogleClassroomConnector = None  # type: ignore[assignment,misc]
+
+DEFAULT_KAI_LABS = (
+    "KAI-Ajax Lab",
+    "AVIA Lab",
+    "MIT UIEL (Ukraine Innovation & Engineering Lab)",
+    "KAI Huawei Excellence Center",
+    "Інша лабораторія / кафедра КАІ",
+)
 
 
 def _wrap_in_scroll(widget: QWidget) -> QScrollArea:
@@ -80,6 +88,7 @@ class CornellNotesPage(QWidget):
         self.cognitive_repo = CognitiveRepository(db)
         self.service = AcademicService(db)
         self._selected_note: Optional[Dict[str, Any]] = None
+        self._notes_cache: List[Dict[str, Any]] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -394,7 +403,11 @@ class ExamSession21Page(QWidget):
             f"Картка {self._card_index + 1} із {len(self._cards)} • {card['subject_name']}"
         )
         self.question_lbl.setText(str(card["question"]))
-        self.answer_lbl.setText(str(card["answer"]) if self._answer_visible else "••• Відповідь прихована (спробуйте відповісти самостійно) •••")
+        self.answer_lbl.setText(
+            str(card["answer"])
+            if self._answer_visible
+            else "••• Відповідь прихована (спробуйте відповісти самостійно) •••"
+        )
 
     def _reveal_answer(self) -> None:
         self._answer_visible = True
@@ -450,7 +463,9 @@ class RdPortfolioPage(QWidget):
         fl = QFormLayout(form_card)
 
         self.lab_combo = QComboBox()
-        self.lab_combo.addItems(list(DEFAULT_SETTINGS.kai_labs))
+        labs = DEFAULT_SETTINGS.get("kai_labs", DEFAULT_KAI_LABS)
+        self.lab_combo.addItems(list(labs))
+
         self.proj_title = QLineEdit()
         self.proj_title.setPlaceholderText("Назва проєкту / прототипу...")
         self.role_edit = QLineEdit()
@@ -576,18 +591,48 @@ class FilesAndSearchPage(QWidget):
             self.results_table.setItem(r, 2, QTableWidgetItem(str(f["file_path"])))
             self.results_table.setItem(r, 3, QTableWidgetItem(str(f["id"])))
 
+    def _search_fts(self, query: str) -> List[Dict[str, Any]]:
+        if hasattr(self.db, "search_fts"):
+            return self.db.search_fts(query)  # type: ignore[no-any-return]
+        with self.db.transaction() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT entity_type AS doc_type, entity_id AS ref_id, title,
+                           snippet(global_fts, 3, '[', ']', '...', 24) AS snippet
+                    FROM global_fts
+                    WHERE global_fts MATCH ?
+                    LIMIT 50
+                    """,
+                    (query,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except sqlite3.Error:
+                like_q = f"%{query}%"
+                rows = conn.execute(
+                    """
+                    SELECT 'indexed_file' AS doc_type, id AS ref_id, file_name AS title,
+                           substr(extracted_text, 1, 120) AS snippet
+                    FROM indexed_files
+                    WHERE file_name LIKE ? OR extracted_text LIKE ?
+                    LIMIT 50
+                    """,
+                    (like_q, like_q),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
     def _run_search(self) -> None:
         q = self.search_edit.text().strip()
         if not q:
             self.refresh()
             return
-        hits = self.db.search_fts(q)
+        hits = self._search_fts(q)
         self.results_table.setRowCount(len(hits))
         for r, h in enumerate(hits):
-            self.results_table.setItem(r, 0, QTableWidgetItem(str(h["doc_type"])))
-            self.results_table.setItem(r, 1, QTableWidgetItem(str(h["title"])))
-            self.results_table.setItem(r, 2, QTableWidgetItem(str(h["snippet"])))
-            self.results_table.setItem(r, 3, QTableWidgetItem(str(h["ref_id"])))
+            self.results_table.setItem(r, 0, QTableWidgetItem(str(h.get("doc_type", ""))))
+            self.results_table.setItem(r, 1, QTableWidgetItem(str(h.get("title", ""))))
+            self.results_table.setItem(r, 2, QTableWidgetItem(str(h.get("snippet", ""))))
+            self.results_table.setItem(r, 3, QTableWidgetItem(str(h.get("ref_id", ""))))
 
     def _add_watch_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Оберіть папку з лекціями / лабораторними")
@@ -648,12 +693,12 @@ class SyncQueuePage(QWidget):
         self.sync_repo = SyncAndFileRepository(db)
         self.academic_repo = AcademicRepository(db)
         self.approval_service = SyncApprovalService(db)
-        self.classroom = GoogleClassroomConnector(self.academic_repo, self.sync_repo)
+        self.classroom = (
+            GoogleClassroomConnector(self.academic_repo, self.sync_repo)
+            if GoogleClassroomConnector is not None
+            else None
+        )
         self.portal = KaiPortalAdapter(self.academic_repo, self.sync_repo)
-        self.vault = CredentialVault()
-        self.conn_state = ConnectorStateRepository(db)
-        self.du = DigitalUniversityConnector(self.academic_repo, self.sync_repo, self.vault, self.conn_state)
-        self._workers: List[TaskWorker] = []
         self.vault = CredentialVault()
         self.conn_state = ConnectorStateRepository(db)
         self.du = DigitalUniversityConnector(self.academic_repo, self.sync_repo, self.vault, self.conn_state)
@@ -677,21 +722,6 @@ class SyncQueuePage(QWidget):
         kai_btn.setProperty("class", "SecondaryBtn")
         kai_btn.clicked.connect(self._sync_kai)
         top.addWidget(kai_btn)
-
-        du_btn = QPushButton("🎓 Digital University")
-        du_btn.setProperty("class", "PrimaryBtn")
-        du_btn.clicked.connect(self._sync_du)
-        top.addWidget(du_btn)
-
-        du_html_btn = QPushButton("📄 Імпорт розкладу (HTML)")
-        du_html_btn.setProperty("class", "SecondaryBtn")
-        du_html_btn.clicked.connect(self._import_du_html)
-        top.addWidget(du_html_btn)
-
-        conn_btn = QPushButton("🔑 Підключення")
-        conn_btn.setProperty("class", "SecondaryBtn")
-        conn_btn.clicked.connect(self._open_connections)
-        top.addWidget(conn_btn)
 
         du_btn = QPushButton("🎓 Digital University")
         du_btn.setProperty("class", "PrimaryBtn")
@@ -746,7 +776,7 @@ class SyncQueuePage(QWidget):
             al.addWidget(rej_b)
             self.table.setCellWidget(r, 4, act_w)
 
-    def _run_async(self, fn, on_ok) -> None:
+    def _run_async(self, fn: Callable[[], Any], on_ok: Callable[[Any], None]) -> None:
         """Довга операція виконується у фоновому потоці — вікно не зависає."""
         worker = TaskWorker(fn, self)
         worker.succeeded.connect(on_ok)
@@ -756,9 +786,16 @@ class SyncQueuePage(QWidget):
         worker.start()
 
     def _sync_classroom(self) -> None:
+        if self.classroom is None:
+            QMessageBox.information(
+                self,
+                "Google Classroom",
+                "Конектор Classroom зараз у процесі переходу на OAuth-адаптер. Налаштуйте підключення в меню «Підключення».",
+            )
+            return
         self._run_async(self.classroom.sync_to_approval_queue, self._after_classroom)
 
-    def _after_classroom(self, res) -> None:
+    def _after_classroom(self, res: Dict[str, Any]) -> None:
         QMessageBox.information(self, "Google Classroom", res["message"])
         self.on_data_changed()
 
@@ -772,7 +809,7 @@ class SyncQueuePage(QWidget):
         if file_str:
             self._run_async(lambda: self.du.import_from_html_file(Path(file_str)), self._after_du)
 
-    def _after_du(self, res) -> None:
+    def _after_du(self, res: Dict[str, Any]) -> None:
         QMessageBox.information(self, "Digital University", res["message"])
         self.on_data_changed()
 
@@ -788,11 +825,7 @@ class SyncQueuePage(QWidget):
 
     def _approve(self, change_id: int) -> None:
         try:
-            try:
             msg = self.approval_service.approve_change(change_id)
-        except (ValueError, KeyError) as exc:
-            QMessageBox.warning(self, "Не застосовано", f"Зміну не вдалося застосувати: {exc}")
-            return
         except (ValueError, KeyError) as exc:
             QMessageBox.warning(self, "Не застосовано", f"Зміну не вдалося застосувати: {exc}")
             return
@@ -829,6 +862,7 @@ class AlgorithmsAndAiPage(QWidget):
         self.academic_repo = AcademicRepository(db)
         self.cognitive_repo = CognitiveRepository(db)
         self.service = AcademicService(db)
+        self._check_boxes: List[QCheckBox] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -891,7 +925,7 @@ class AlgorithmsAndAiPage(QWidget):
         w = QWidget()
         l = QVBoxLayout(w)
 
-        self._check_boxes: List[QCheckBox] = []
+        self._check_boxes = []
         for q in self.CHECKLIST_7:
             cb = QCheckBox(q)
             cb.stateChanged.connect(self._evaluate_checklist)
@@ -1030,11 +1064,13 @@ class SettingsAndBackupsPage(QWidget):
         self.theme_combo = QComboBox()
         self.theme_combo.addItem("Темна тема (Командний центр)", "dark")
         self.theme_combo.addItem("Світла денна тема", "light")
-        curr_theme = self.academic_repo.get_setting("theme", DEFAULT_SETTINGS.theme)
+        default_theme = str(DEFAULT_SETTINGS.get("theme", "dark"))
+        curr_theme = self.academic_repo.get_setting("theme", default_theme)
         self.theme_combo.setCurrentIndex(1 if curr_theme == "light" else 0)
 
+        default_anchor = str(DEFAULT_SETTINGS.get("parity_anchor_date", "2026-09-01"))
         self.anchor_edit = QLineEdit(
-            self.academic_repo.get_setting("parity_anchor_date", DEFAULT_SETTINGS.parity_anchor_date)
+            self.academic_repo.get_setting("parity_anchor_date", default_anchor)
         )
 
         fl.addRow("Оформлення інтерфейсу:", self.theme_combo)
@@ -1088,8 +1124,27 @@ class SettingsAndBackupsPage(QWidget):
         self.on_data_changed()
 
     def _create_backup(self) -> None:
-        path = self.db.create_backup()
-        QMessageBox.information(self, "Бекап створено", f"Резервну копію збережено:\n{path}")
+        BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = BACKUPS_DIR / f"kai_dashboard_backup_{stamp}.db"
+
+        if hasattr(self.db, "create_backup"):
+            backup_path = Path(self.db.create_backup())  # type: ignore[attr-defined]
+        else:
+            with self.db.transaction() as src_conn:
+                dst_conn = sqlite3.connect(backup_path)
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+
+        size = backup_path.stat().st_size if backup_path.exists() else 0
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO backup_history (backup_type, file_path, size_bytes) VALUES (?, ?, ?)",
+                ("sqlite_hot_backup", str(backup_path), size),
+            )
+        QMessageBox.information(self, "Бекап створено", f"Резервну копію збережено:\n{backup_path}")
         self.refresh()
 
     def _create_blackout(self) -> None:

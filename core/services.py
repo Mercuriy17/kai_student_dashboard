@@ -6,8 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config.defaults import BLACKOUT_DIR, DEFAULT_SETTINGS
-from core.database import DatabaseManager
+from config.defaults import DEFAULT_SETTINGS, PATHS
+from core.database.connection import DatabaseManager
 from core.domain.academic_rules import ParityResolver, ScheduleWindow, WindowAnalyzer
 from core.domain.cognitive_and_priority import (
     PrioritizedTask,
@@ -35,10 +35,10 @@ class AcademicService:
 
     def get_today_context(self, target_date: Optional[date] = None) -> Dict[str, Any]:
         today = target_date or date.today()
-        anchor_str = self.academic_repo.get_setting(
-            "parity_anchor_date", DEFAULT_SETTINGS.parity_anchor_date
-        )
+        default_anchor = str(DEFAULT_SETTINGS.get("parity_anchor_date", "2026-09-01"))
+        anchor_str = self.academic_repo.get_setting("parity_anchor_date", default_anchor)
         anchor_date = date.fromisoformat(anchor_str)
+
         parity = ParityResolver.get_week_parity(today, anchor_date)
         parity_label = ParityResolver.format_parity_ua(parity)
 
@@ -50,10 +50,11 @@ class AcademicService:
             if ParityResolver.is_entry_active_on_parity(e.get("parity", "both"), parity)
         ]
 
+        default_min_win = int(DEFAULT_SETTINGS.get("min_productive_window_minutes", 45))
         min_win = int(
             self.academic_repo.get_setting(
                 "min_productive_window_minutes",
-                str(DEFAULT_SETTINGS.min_productive_window_minutes),
+                str(default_min_win),
             )
         )
         windows: List[ScheduleWindow] = WindowAnalyzer.find_productive_windows(
@@ -61,11 +62,12 @@ class AcademicService:
         )
 
         # Нагадування про переходи між корпусами КАІ
+        default_lead = int(DEFAULT_SETTINGS.get("default_class_reminder_minutes", 15))
         smart_reminders: List[str] = []
         for idx, cls in enumerate(today_classes):
             prev_cls = today_classes[idx - 1] if idx > 0 else None
             _, msg = WindowAnalyzer.calculate_smart_reminder_lead(
-                prev_cls, cls, DEFAULT_SETTINGS.default_class_reminder_minutes
+                prev_cls, cls, default_lead
             )
             smart_reminders.append(f"{cls['start_time']} {cls['subject_name']}: {msg}")
 
@@ -141,8 +143,8 @@ class AcademicService:
         )
         return next_stage, next_iso
 
+    @staticmethod
     def generate_ai_declaration_text(
-        self,
         tool_name: str,
         purpose: str,
         verified_sources: bool = True,
@@ -164,6 +166,8 @@ class AcademicService:
 class SyncApprovalService:
     """Реалізує принцип Human-in-the-loop: зовнішні зміни потрапляють у БД лише після підтвердження."""
 
+    ALLOWED_SETTING_KEYS = frozenset({"parity_anchor_date"})
+
     def __init__(self, db: DatabaseManager) -> None:
         self.db = db
         self.sync_repo = SyncAndFileRepository(db)
@@ -171,11 +175,14 @@ class SyncApprovalService:
         self.task_repo = TaskRepository(db)
 
     def approve_change(self, change_id: int) -> str:
-        row = self.db.fetch_one("SELECT * FROM agent_changes WHERE id = ?", (change_id,))
+        with self.db.transaction() as conn:
+            raw_row = conn.execute("SELECT * FROM agent_changes WHERE id = ?", (change_id,)).fetchone()
+            row = dict(raw_row) if raw_row is not None else None
+
         if not row or row["status"] != "pending":
             return "Зміна вже оброблена або не знайдена."
 
-        payload = json.loads(row["payload_json"])
+        payload: Dict[str, Any] = json.loads(row["payload_json"])
         entity_type = row["entity_type"]
         source = row["source"]
 
@@ -204,33 +211,15 @@ class SyncApprovalService:
 
         elif entity_type == "rso_draft":
             subject_id = int(payload["subject_id"])
-            for comp in payload.get("components", []):
+            components = payload.get("components", [])
+            for comp in components:
                 self.academic_repo.add_rso_component(
                     subject_id=subject_id,
                     title=str(comp["title"]),
                     component_type=str(comp.get("component_type", "lab")),
                     max_score=float(comp.get("max_score", 10.0)),
                 )
-            msg = f"Структуру РСО ({len(payload.get('components', []))} компонентів) застосовано."
-
-        elif entity_type == "calendar_event":
-            self.academic_repo.add_calendar_event(
-                title=str(payload["title"]),
-                event_date=str(payload["event_date"]),
-                start_time=str(payload["start_time"]),
-                end_time=str(payload["end_time"]),
-                event_type=str(payload.get("event_type", "replacement")),
-                subject_id=self._resolve_subject_id(payload),
-                location=str(payload.get("location", "")),
-                description=str(payload.get("description", "")),
-            )
-            msg = f"Разову подію «{row['title']}» додано до календаря."
-
-        elif entity_type == "setting":
-            if payload.get("key") not in self.ALLOWED_SETTING_KEYS:
-                return "Цей параметр не можна змінити зовнішньою пропозицією."
-            self.academic_repo.set_setting(str(payload["key"]), str(payload["value"]))
-            msg = f"Параметр «{payload['key']}» оновлено."
+            msg = f"Структуру РСО ({len(components)} компонентів) застосовано."
 
         elif entity_type == "calendar_event":
             self.academic_repo.add_calendar_event(
@@ -264,40 +253,14 @@ class SyncApprovalService:
                 room=str(payload.get("room", "")),
                 online_url=str(payload.get("online_url", "")),
                 notes=str(payload.get("notes", "")),
-                online_url=str(payload.get("online_url", "")),
-                notes=str(payload.get("notes", "")),
             )
             msg = f"Заняття «{row['title']}» додано до розкладу."
+
         else:
             msg = f"Зміну «{row['title']}» підтверджено."
 
         self.sync_repo.mark_agent_change(change_id, "approved")
         return msg
-
-    ALLOWED_SETTING_KEYS = frozenset({"parity_anchor_date"})
-
-    def _resolve_subject_id(self, payload: Dict[str, Any]) -> int:
-        """Дисципліна за ID або назвою з порталу; якщо такої немає — створюється в активному семестрі."""
-        if payload.get("subject_id") is not None:
-            return int(payload["subject_id"])
-        name = str(payload.get("subject_name", "")).strip()
-        if not name:
-            raise ValueError("У пропозиції не вказано дисципліну.")
-        low = name.lower()
-        subjects = self.academic_repo.list_subjects()
-        for subj in subjects:
-            if str(subj["name"]).lower() == low:
-                return int(subj["id"])
-        for subj in subjects:
-            existing = str(subj["name"]).lower()
-            if len(existing) >= 5 and (low in existing or existing in low):
-                return int(subj["id"])
-        sem = self.academic_repo.get_active_semester()
-        if sem is None:
-            raise ValueError("Немає активного семестру для створення дисципліни.")
-        return self.academic_repo.create_subject(semester_id=int(sem["id"]), name=name)
-
-    ALLOWED_SETTING_KEYS = frozenset({"parity_anchor_date"})
 
     def _resolve_subject_id(self, payload: Dict[str, Any]) -> int:
         """Дисципліна за ID або назвою з порталу; якщо такої немає — створюється в активному семестрі."""
@@ -334,8 +297,8 @@ class BlackoutExportService:
         self.cognitive_repo = CognitiveRepository(db)
         self.portfolio_repo = PortfolioRepository(db)
 
-    def export_blackout_bundle(self, target_dir: Path | str = BLACKOUT_DIR) -> Path:
-        out_folder = Path(target_dir)
+    def export_blackout_bundle(self, target_dir: Path | str | None = None) -> Path:
+        out_folder = Path(target_dir) if target_dir is not None else (PATHS.base_dir / "blackout_packs")
         out_folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         zip_path = out_folder / f"KAI_Blackout_Pack_{stamp}.zip"
@@ -347,9 +310,9 @@ class BlackoutExportService:
         cards = self.cognitive_repo.list_flashcards()
         summaries = self.academic_repo.get_all_rso_summaries()
 
-        # 1. План дій на 48 год та поточні бали РСО (Markdown)
         plan_lines = [
-            f"# Автономний пакет КАІ (Алгоритм 6 — Режим блекауту)\nСформовано: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+            f"# Автономний пакет КАІ (Алгоритм 6 — Режим блекауту)\n"
+            f"Сформовано: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
             "## 1. Два критичні пріоритети на найближчі 48 годин",
         ]
         for idx, pt in enumerate(top2, start=1):
@@ -361,12 +324,15 @@ class BlackoutExportService:
 
         plan_lines.append("\n## 2. Поточний рейтинг РСО та пороги допуску")
         for s in summaries:
-            status_txt = "ДОПУЩЕНО" if s.is_admitted else f"не вистачає {s.points_needed_for_admission} б. до допуску"
+            status_txt = (
+                "ДОПУЩЕНО"
+                if s.is_admitted
+                else f"не вистачає {s.points_needed_for_admission} б. до допуску"
+            )
             plan_lines.append(
                 f"- **{s.subject_name}**: {s.total_earned} / 100 балів ({status_txt})"
             )
 
-        # 2. Конспекти Корнелла та колода 21 день для самоперевірки без екрана
         deck_lines = ["# Колода активного пригадування (25 хвилин без інтернету)\n"]
         for c in cards:
             deck_lines.append(f"### Запитання ({c['subject_name']}):\n{c['question']}\n")
@@ -384,8 +350,9 @@ class BlackoutExportService:
             zf.writestr("02_ACTIVE_RECALL_DECK_25MIN.md", "\n".join(deck_lines))
 
         size = zip_path.stat().st_size if zip_path.exists() else 0
-        self.db.execute(
-            "INSERT INTO backup_history (backup_type, file_path, size_bytes) VALUES (?, ?, ?)",
-            ("blackout_pack", str(zip_path), size),
-        )
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO backup_history (backup_type, file_path, size_bytes) VALUES (?, ?, ?)",
+                ("blackout_pack", str(zip_path), size),
+            )
         return zip_path
