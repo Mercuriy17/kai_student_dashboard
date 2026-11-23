@@ -86,3 +86,23 @@ def test_log_filter_masks_secrets():
     rec = logging.LogRecord("x", logging.INFO, "", 0, "login ok password=hunter2 csrf: abc", (), None)
     RedactFilter().filter(rec)
     assert "hunter2" not in rec.msg and "abc" not in rec.msg
+
+
+
+def test_vault_reports_delete_backend_failure():
+    from core.credential_vault import VaultError
+
+    class BrokenDeleteKeyring(FakeKeyring):
+        def delete_password(self, s, u):
+            raise RuntimeError("backend unavailable")
+
+    keyring = BrokenDeleteKeyring()
+    keyring.set_password("KAIStudentDashboard_x", "credentials", '{"login":"u","password":"p"}')
+    with pytest.raises(VaultError):
+        CredentialVault(keyring).delete("x")
+
+
+def test_vault_treats_malformed_payload_as_missing():
+    keyring = FakeKeyring()
+    keyring.set_password("KAIStudentDashboard_x", "credentials", '["not", "an", "object"]')
+    assert CredentialVault(keyring).load("x") is None
