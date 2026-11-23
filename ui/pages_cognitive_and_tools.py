@@ -44,7 +44,7 @@ from core.repositories import (
 )
 from core.services import AcademicService, BlackoutExportService, SyncApprovalService
 from infrastructure.files.file_indexer import LocalFileIndexer
-from infrastructure.system.credentials import CredentialVault
+from core.credential_vault import CredentialVault
 from integrations.digital_university import DigitalUniversityConnector
 from integrations.kai_portal import KaiPortalAdapter
 from integrations.syllabus_parser import SyllabusParser
