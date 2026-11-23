@@ -557,17 +557,12 @@ class DigitalUniversityConnector:
         diff_summary: str,
         confidence: float,
     ) -> bool:
-        added = self.sync_repo.enqueue_agent_change(
+        return self.sync_repo.enqueue_agent_change(
             source=CONNECTOR_ID,
             external_id=external_id,
             entity_type=entity_type,
             title=title,
             payload=payload,
             diff_summary=diff_summary,
+            confidence=confidence,
         )
-        if added:
-            self.sync_repo.db.execute(
-                "UPDATE agent_changes SET confidence = ? WHERE source = ? AND external_id = ?",
-                (confidence, CONNECTOR_ID, external_id),
-            )
-        return added
