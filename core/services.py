@@ -175,92 +175,114 @@ class SyncApprovalService:
         self.task_repo = TaskRepository(db)
 
     def approve_change(self, change_id: int) -> str:
+        """Застосовує пропозицію та змінює її статус в одній транзакції."""
         with self.db.transaction() as conn:
-            raw_row = conn.execute("SELECT * FROM agent_changes WHERE id = ?", (change_id,)).fetchone()
-            row = dict(raw_row) if raw_row is not None else None
+            raw_row = conn.execute(
+                "SELECT * FROM agent_changes WHERE id = ? AND status = 'pending'",
+                (change_id,),
+            ).fetchone()
+            if raw_row is None:
+                return "Зміна вже оброблена або не знайдена."
 
-        if not row or row["status"] != "pending":
-            return "Зміна вже оброблена або не знайдена."
+            row = dict(raw_row)
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Пропозиція #{change_id} містить некоректний JSON.") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"Пропозиція #{change_id} має некоректний формат.")
 
-        payload: Dict[str, Any] = json.loads(row["payload_json"])
-        entity_type = row["entity_type"]
-        source = row["source"]
+            entity_type = row["entity_type"]
+            source = row["source"]
 
-        if entity_type == "task":
-            self.task_repo.create_task(
-                title=str(payload.get("title", row["title"])),
-                subject_id=payload.get("subject_id"),
-                description=str(payload.get("description", "")),
-                task_type=str(payload.get("task_type", "homework")),
-                priority=int(payload.get("priority", 2)),
-                due_date=payload.get("due_date"),
-            )
-            msg = f"Завдання «{row['title']}» додано до робочого плану."
+            if entity_type == "task":
+                self.task_repo.create_task(
+                    title=str(payload.get("title", row["title"])),
+                    subject_id=payload.get("subject_id"),
+                    description=str(payload.get("description", "")),
+                    task_type=str(payload.get("task_type", "homework")),
+                    priority=int(payload.get("priority", 2)),
+                    due_date=payload.get("due_date"),
+                )
+                msg = f"Завдання «{row['title']}» додано до робочого плану."
 
-        elif entity_type == "grade":
-            comp_id = payload.get("rso_component_id")
-            score = payload.get("score")
-            if comp_id is not None and score is not None:
+            elif entity_type == "grade":
+                comp_id = payload.get("rso_component_id")
+                score = payload.get("score")
+                if comp_id is None or score is None:
+                    raise ValueError("Пропозиція оцінки не містить компонента РСО або бала.")
                 self.academic_repo.update_component_score(
                     int(comp_id),
                     float(score),
                     source=source,
                     note=f"Підтверджено зі зміни #{change_id}",
                 )
-            msg = f"Оцінку за «{row['title']}» оновлено в журналі РСО."
+                msg = f"Оцінку за «{row['title']}» оновлено в журналі РСО."
 
-        elif entity_type == "rso_draft":
-            subject_id = int(payload["subject_id"])
-            components = payload.get("components", [])
-            for comp in components:
-                self.academic_repo.add_rso_component(
-                    subject_id=subject_id,
-                    title=str(comp["title"]),
-                    component_type=str(comp.get("component_type", "lab")),
-                    max_score=float(comp.get("max_score", 10.0)),
+            elif entity_type == "rso_draft":
+                subject_id = int(payload["subject_id"])
+                components = payload.get("components", [])
+                if not isinstance(components, list):
+                    raise ValueError("Список компонентів РСО має бути масивом.")
+                for component in components:
+                    self.academic_repo.add_rso_component(
+                        subject_id=subject_id,
+                        title=str(component["title"]),
+                        component_type=str(component.get("component_type", "lab")),
+                        max_score=float(component.get("max_score", 10.0)),
+                    )
+                msg = f"Структуру РСО ({len(components)} компонентів) застосовано."
+
+            elif entity_type == "calendar_event":
+                self.academic_repo.add_calendar_event(
+                    title=str(payload["title"]),
+                    event_date=str(payload["event_date"]),
+                    start_time=str(payload["start_time"]),
+                    end_time=str(payload["end_time"]),
+                    event_type=str(payload.get("event_type", "replacement")),
+                    subject_id=self._resolve_subject_id(payload),
+                    location=str(payload.get("location", "")),
+                    description=str(payload.get("description", "")),
                 )
-            msg = f"Структуру РСО ({len(components)} компонентів) застосовано."
+                msg = f"Разову подію «{row['title']}» додано до календаря."
 
-        elif entity_type == "calendar_event":
-            self.academic_repo.add_calendar_event(
-                title=str(payload["title"]),
-                event_date=str(payload["event_date"]),
-                start_time=str(payload["start_time"]),
-                end_time=str(payload["end_time"]),
-                event_type=str(payload.get("event_type", "replacement")),
-                subject_id=self._resolve_subject_id(payload),
-                location=str(payload.get("location", "")),
-                description=str(payload.get("description", "")),
+            elif entity_type == "setting":
+                key = payload.get("key")
+                if key not in self.ALLOWED_SETTING_KEYS:
+                    raise ValueError("Цей параметр не можна змінити зовнішньою пропозицією.")
+                self.academic_repo.set_setting(str(key), str(payload["value"]))
+                msg = f"Параметр «{key}» оновлено."
+
+            elif entity_type == "schedule":
+                self.academic_repo.add_schedule_entry(
+                    subject_id=self._resolve_subject_id(payload),
+                    day_of_week=int(payload["day_of_week"]),
+                    pair_number=int(payload.get("pair_number", 1)),
+                    start_time=str(payload["start_time"]),
+                    end_time=str(payload["end_time"]),
+                    parity=str(payload.get("parity", "both")),
+                    lesson_type=str(payload.get("lesson_type", "lecture")),
+                    building=str(payload.get("building", "1")),
+                    room=str(payload.get("room", "")),
+                    online_url=str(payload.get("online_url", "")),
+                    notes=str(payload.get("notes", "")),
+                )
+                msg = f"Заняття «{row['title']}» додано до розкладу."
+
+            else:
+                raise ValueError(f"Невідомий тип пропозиції: {entity_type!r}")
+
+            updated = conn.execute(
+                """
+                UPDATE agent_changes
+                SET status = 'approved', reviewed_at = datetime('now')
+                WHERE id = ? AND status = 'pending'
+                """,
+                (change_id,),
             )
-            msg = f"Разову подію «{row['title']}» додано до календаря."
-
-        elif entity_type == "setting":
-            if payload.get("key") not in self.ALLOWED_SETTING_KEYS:
-                return "Цей параметр не можна змінити зовнішньою пропозицією."
-            self.academic_repo.set_setting(str(payload["key"]), str(payload["value"]))
-            msg = f"Параметр «{payload['key']}» оновлено."
-
-        elif entity_type == "schedule":
-            self.academic_repo.add_schedule_entry(
-                subject_id=self._resolve_subject_id(payload),
-                day_of_week=int(payload["day_of_week"]),
-                pair_number=int(payload.get("pair_number", 1)),
-                start_time=str(payload["start_time"]),
-                end_time=str(payload["end_time"]),
-                parity=str(payload.get("parity", "both")),
-                lesson_type=str(payload.get("lesson_type", "lecture")),
-                building=str(payload.get("building", "1")),
-                room=str(payload.get("room", "")),
-                online_url=str(payload.get("online_url", "")),
-                notes=str(payload.get("notes", "")),
-            )
-            msg = f"Заняття «{row['title']}» додано до розкладу."
-
-        else:
-            msg = f"Зміну «{row['title']}» підтверджено."
-
-        self.sync_repo.mark_agent_change(change_id, "approved")
-        return msg
+            if updated.rowcount != 1:
+                raise RuntimeError("Статус пропозиції змінився під час підтвердження.")
+            return msg
 
     def _resolve_subject_id(self, payload: Dict[str, Any]) -> int:
         """Дисципліна за ID або назвою з порталу; якщо такої немає — створюється в активному семестрі."""
