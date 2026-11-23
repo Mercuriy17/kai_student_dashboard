@@ -9,9 +9,8 @@ def main() -> int:
     app.setApplicationName("KAI Student Dashboard")
 
     container = AppContainer.build()
-    # Ініціалізація схеми БД через міграції перед стартом UI
-    with container.db.transaction() as conn:
-        conn.execute("SELECT 1;")
+    # Схема БД має бути актуальною до створення будь-яких репозиторіїв та сторінок.
+    container.db.apply_migrations()
 
     window = MainWindow(container=container)  # Передаємо єдиний контейнер замість набору репозиторіїв
     window.show()
