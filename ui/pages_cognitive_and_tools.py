@@ -817,11 +817,14 @@ class SyncQueuePage(QWidget):
         ConnectionsDialog(self.vault, self.conn_state, self.du, self).exec()
 
     def _sync_kai(self) -> None:
-        added = self.portal.fetch_demo_portal_updates()
         QMessageBox.information(
-            self, "Портал КАІ", f"Перевірку завершено. Нових подій у черзі: {added}."
+            self,
+            "Портал КАІ",
+            "Пряма синхронізація з порталом КАІ ще не реалізована. "
+            "Щоб не додавати демонстраційні або неперевірені дані до вашого розкладу, "
+            "ця дія не створює жодних записів. Для отримання реального розкладу "
+            "скористайтеся підключенням Digital University або імпортом HTML.",
         )
-        self.on_data_changed()
 
     def _approve(self, change_id: int) -> None:
         try:
