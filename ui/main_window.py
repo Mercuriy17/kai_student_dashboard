@@ -115,8 +115,8 @@ class MainWindow(QMainWindow):
         brand.setObjectName("BrandTitle")
         sb_layout.addWidget(brand)
 
-        default_name = getattr(DEFAULT_SETTINGS, "student_name", "Студент КАІ")
-        default_group = getattr(DEFAULT_SETTINGS, "student_group", "")
+        default_name = DEFAULT_SETTINGS.get("student_name", "Студент КАІ")
+        default_group = DEFAULT_SETTINGS.get("student_group", "")
         student_name = self.academic_repo.get_setting("student_name", default_name)
         student_group = self.academic_repo.get_setting("student_group", default_group)
 
@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._update_top_badges()
 
-        default_theme = getattr(DEFAULT_SETTINGS, "theme", "dark")
+        default_theme = DEFAULT_SETTINGS.get("theme", "dark")
         saved_theme = self.academic_repo.get_setting("theme", default_theme)
         self.apply_theme(saved_theme)
 
@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
                 page.refresh()
 
     def _update_top_badges(self) -> None:
-        default_anchor = getattr(DEFAULT_SETTINGS, "parity_anchor_date", date.today().isoformat())
+        default_anchor = DEFAULT_SETTINGS.get("parity_anchor_date", date.today().isoformat())
         anchor_str = self.academic_repo.get_setting("parity_anchor_date", default_anchor)
         parity = ParityResolver.get_week_parity(date.today(), date.fromisoformat(anchor_str))
         self.parity_badge.setText(ParityResolver.format_parity_ua(parity))
