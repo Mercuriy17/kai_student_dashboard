@@ -49,9 +49,17 @@ DEFAULT_SETTINGS = {
 
 
 def get_transit_minutes(from_building: str, to_building: str) -> int:
-    """Повертає орієнтовний час переходу між корпусами КАІ у хвилинах."""
+    """Повертає налаштований час переходу між корпусами КАІ у хвилинах.
+
+    Якщо задано лише один напрямок, використовуємо його і для зворотного
+    маршруту. Для невідомої пари корпусів резервне значення становить 10 хв.
+    """
     b1 = str(from_building).strip()
     b2 = str(to_building).strip()
     if not b1 or not b2 or b1 == b2:
         return 0
+    return CAMPUS_TRANSIT_MINUTES.get(
+        (b1, b2),
+        CAMPUS_TRANSIT_MINUTES.get((b2, b1), 10),
+    )
     return 10
