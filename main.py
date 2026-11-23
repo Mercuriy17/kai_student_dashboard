@@ -2,9 +2,11 @@ import sys
 from PySide6.QtWidgets import QApplication
 from app.container import AppContainer
 from ui.main_window import MainWindow
+from core.logging_setup import setup_logging
 
 
 def main() -> int:
+    setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("KAI Student Dashboard")
 
